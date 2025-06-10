@@ -10,6 +10,7 @@ import Image from "next/image";
 import Transcript from "./components/Transcript";
 import Events from "./components/Events";
 import BottomToolbar from "./components/BottomToolbar";
+import StudentRecording from "./components/StudentRecording";
 
 // Types
 import { SessionStatus, TranscriptItem } from "@/app/types";
@@ -103,11 +104,12 @@ function App() {
     },
   );
 
-
-
   // Initialize the recording hook.
   const { startRecording, stopRecording, downloadRecording } =
     useAudioDownload();
+
+  const [showRecordingPanel, setShowRecordingPanel] = useState(false);
+  const [currentStudentName, setCurrentStudentName] = useState("");
 
   const sendClientEvent = (eventObj: any, eventNameSuffix = '') => {
     if (!sdkClientRef.current) {
@@ -803,6 +805,14 @@ function App() {
 
   const agentSetKey = searchParams.get("agentConfig") || "default";
 
+  const handleRecordingComplete = async (metadata: any) => {
+    // Save the recording metadata
+    addTranscriptBreadcrumb('Recording metadata saved', metadata);
+    
+    // You can add additional logic here to handle the recording metadata
+    // For example, sending it to a server or storing it in a database
+  };
+
   return (
     <div className="text-base flex flex-col h-screen bg-gray-100 text-gray-800 relative">
       {/* <div className="p-5 text-lg font-semibold flex justify-between items-center">
@@ -898,7 +908,14 @@ function App() {
           }
         />
 
-        {/* <Events isExpanded={isEventsPaneExpanded} /> */}
+        {showRecordingPanel && (
+          <div className="p-4 border-t">
+            <StudentRecording
+              studentName={currentStudentName}
+              onRecordingComplete={handleRecordingComplete}
+            />
+          </div>
+        )}
       </div>
 
       <BottomToolbar
@@ -915,6 +932,7 @@ function App() {
         setIsAudioPlaybackEnabled={setIsAudioPlaybackEnabled}
         codec={urlCodec}
         onCodecChange={handleCodecChange}
+        onToggleRecordingPanel={() => setShowRecordingPanel(!showRecordingPanel)}
       />
     </div>
   );

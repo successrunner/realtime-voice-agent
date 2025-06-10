@@ -13,18 +13,31 @@ interface StudentRecordingProps {
     duration: number;
     tags: string[];
   }) => void;
+  autoDownload?: boolean;
+  autoStart?: boolean;
+  autoStop?: boolean;
+  initialRecordingType?: 'audio' | 'video';
+  initialPurpose?: string;
+  initialDescription?: string;
 }
 
 export const StudentRecording: React.FC<StudentRecordingProps> = ({
   studentName,
   onRecordingComplete,
+  autoDownload = true,
+  autoStart = false,
+  autoStop = false,
+  initialRecordingType = 'audio',
+  initialPurpose = 'Daily Reflection',
+  initialDescription = 'Student feedback recording',
 }) => {
   const [isRecording, setIsRecording] = useState(false);
-  const [recordingType, setRecordingType] = useState<'audio' | 'video'>('audio');
-  const [purpose, setPurpose] = useState('');
-  const [description, setDescription] = useState('');
+  const [recordingType, setRecordingType] = useState<'audio' | 'video'>(initialRecordingType);
+  const [purpose, setPurpose] = useState(initialPurpose);
+  const [description, setDescription] = useState(initialDescription);
   const [duration, setDuration] = useState(0);
   const [tags, setTags] = useState<string[]>([]);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -33,6 +46,14 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   const { addTranscriptBreadcrumb } = useTranscript();
+
+  const feedbackPurposes = [
+    'Daily Reflection',
+    'Learning Experience',
+    'Challenge & Solution',
+    'Achievement',
+    'Improvement Suggestion'
+  ];
 
   const startRecording = async () => {
     try {
@@ -75,15 +96,20 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
           tags,
         });
 
+        // Set download URL and trigger download if autoDownload is enabled
+        setDownloadUrl(url);
+        if (autoDownload) {
+          downloadRecording(url);
+        }
+
         // Log the recording event
-        addTranscriptBreadcrumb('Recording saved', {
+        addTranscriptBreadcrumb('Feedback recording saved', {
           type: recordingType,
           purpose,
           duration,
         });
 
         // Clean up
-        URL.revokeObjectURL(url);
         if (streamRef.current) {
           streamRef.current.getTracks().forEach(track => track.stop());
         }
@@ -98,7 +124,7 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
         setDuration(Math.floor((Date.now() - startTimeRef.current) / 1000));
       }, 1000);
 
-      addTranscriptBreadcrumb('Recording started', {
+      addTranscriptBreadcrumb('Feedback recording started', {
         type: recordingType,
         purpose,
       });
@@ -117,6 +143,23 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
       if (timerRef.current) {
         clearInterval(timerRef.current);
       }
+    }
+  };
+
+  const downloadRecording = (url: string) => {
+    try {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${studentName}_${purpose}_${new Date().toISOString()}.${
+        recordingType === 'audio' ? 'mp3' : 'mp4'
+      }`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      addTranscriptBreadcrumb('Recording downloaded successfully');
+    } catch (error) {
+      console.error('Error downloading recording:', error);
+      addTranscriptBreadcrumb('Failed to download recording', { error });
     }
   };
 
@@ -144,8 +187,29 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
       if (timerRef.current) {
         clearInterval(timerRef.current);
       }
+      if (downloadUrl) {
+        URL.revokeObjectURL(downloadUrl);
+      }
     };
-  }, []);
+  }, [downloadUrl]);
+
+  useEffect(() => {
+    if (autoStart && !isRecording) {
+      startRecording();
+    }
+  }, [autoStart]);
+
+  useEffect(() => {
+    if (autoStop && isRecording) {
+      stopRecording();
+    }
+  }, [autoStop]);
+
+  useEffect(() => {
+    if (downloadUrl && autoDownload && !isRecording) {
+      downloadRecording(downloadUrl);
+    }
+  }, [downloadUrl, autoDownload, isRecording]);
 
   return (
     <div className="p-4 bg-white rounded-lg shadow">
@@ -167,16 +231,21 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
 
         <div>
           <label className="block text-sm font-medium text-gray-700">
-            Purpose
+            Feedback Type
           </label>
-          <input
-            type="text"
+          <select
             value={purpose}
             onChange={(e) => setPurpose(e.target.value)}
-            placeholder="e.g., work presentation, progress reflection"
             className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
             disabled={isRecording}
-          />
+          >
+            <option value="">Select feedback type...</option>
+            {feedbackPurposes.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div>
@@ -186,7 +255,7 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Describe what will be recorded"
+            placeholder="Describe what you want to share about your day..."
             className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
             disabled={isRecording}
           />
@@ -199,7 +268,7 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
           <input
             type="text"
             onChange={handleTagChange}
-            placeholder="Add tags..."
+            placeholder="Add tags (e.g., math, art, reading)..."
             className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
             disabled={isRecording}
           />
@@ -246,6 +315,17 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
             </button>
           )}
         </div>
+
+        {downloadUrl && !isRecording && !autoDownload && (
+          <div className="mt-4 flex justify-center">
+            <button
+              onClick={() => downloadRecording(downloadUrl)}
+              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+            >
+              Download Recording
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

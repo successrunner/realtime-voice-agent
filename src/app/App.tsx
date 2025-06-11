@@ -810,12 +810,6 @@ export default function App() {
   }, [sessionStatus, isAudioPlaybackEnabled]);
 
   useEffect(() => {
-    if (sessionStatus === "CONNECTED" && audioElementRef.current?.srcObject) {
-      // The remote audio stream from the audio element.
-      const remoteStream = audioElementRef.current.srcObject as MediaStream;
-      startRecording(remoteStream);
-    }
-
     // Clean up on unmount or when sessionStatus is updated.
     return () => {
       stopRecording();
@@ -850,15 +844,27 @@ export default function App() {
     if (item.type === "function_call") {
       const toolName = (item as any).name;
       const args = (item as any).arguments;
-
+      
       // Handle recording-related tool calls
       if (toolName === "startRecording") {
         const recordingType = args?.recordingType || "audio";
         const purpose = args?.purpose || "Daily Reflection";
         const description = args?.description || "Student feedback recording";
 
+        // First, interrupt any ongoing speech
+        await cancelAssistantSpeech();
+
+        // Wait a short moment for the speech to fully stop
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Now start the recording
+        if (audioElementRef.current?.srcObject) {
+          const remoteStream = audioElementRef.current.srcObject as MediaStream;
+          await startRecording(remoteStream);
+        }
+
+        // Show the recording panel and update config
         setShowRecordingPanel(true);
-        // Set up the recording configuration
         setCurrentStudentName("Student");
         setRecordingConfig({
           autoStart: true,
@@ -870,14 +876,23 @@ export default function App() {
           isProcessing: false,
         });
 
-        addTranscriptBreadcrumb("Recording started automatically", {
-          type: recordingType,
-          purpose,
-          description,
-        });
+        // Add a simple message to the transcript
+        const messageId = uuidv4();
+        addTranscriptMessage(messageId, "assistant", "The recording has started");
+
+        // Mute the agent after the message to prevent further speech
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        if (sdkClientRef.current) {
+          try {
+            sdkClientRef.current.mute(true);
+          } catch (err) {
+            console.warn("Failed to mute agent", err);
+          }
+        }
+
       } else if (toolName === "stopRecording") {
+        stopRecording();
         setShowRecordingPanel(false);
-        // Update recording config to stop
         setRecordingConfig((prev) => ({
           ...prev,
           autoStart: false,
@@ -886,7 +901,23 @@ export default function App() {
           isProcessing: true,
         }));
 
-        addTranscriptBreadcrumb("Recording stopped automatically");
+        // Unmute the agent after recording stops
+        if (sdkClientRef.current) {
+          try {
+            sdkClientRef.current.mute(!isAudioPlaybackEnabled);
+          } catch (err) {
+            console.warn("Failed to restore agent mute state", err);
+          }
+        }
+
+        // Log the stop event silently
+        logClientEvent({ type: "recording.stopped" });
+      }
+
+      // Log tool calls silently
+      if (!loggedFunctionCallsRef.current.has(item.itemId)) {
+        logClientEvent({ type: "tool.call", name: toolName, arguments: args });
+        loggedFunctionCallsRef.current.add(item.itemId);
       }
     }
   };

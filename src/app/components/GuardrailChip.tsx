@@ -73,7 +73,7 @@ export function GuardrailChip({
           state !== "PENDING" ? "cursor-pointer" : ""
         }`}
       >
-        Guardrail:
+        Coach Sparky:
         <div className={`flex items-center gap-1 ${textColorClass}`}>
           <IconComponent /> {label}
         </div>

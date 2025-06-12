@@ -6,45 +6,24 @@ function useAudioDownload() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   // Ref to collect all recorded Blob chunks.
   const recordedChunksRef = useRef<Blob[]>([]);
+  // Ref to track if we're recording video
+  const isVideoRecordingRef = useRef<boolean>(false);
 
   /**
-   * Starts recording by combining the provided remote stream with
-   * the microphone audio.
-   * @param remoteStream - The remote MediaStream (e.g., from the audio element).
+   * Starts recording by combining the provided stream with
+   * the microphone audio if needed.
+   * @param stream - The MediaStream to record (may include video).
    */
-  const startRecording = async (remoteStream: MediaStream) => {
-    let micStream: MediaStream;
-    try {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (err) {
-      console.error("Error getting microphone stream:", err);
-      // Fallback to an empty MediaStream if microphone access fails.
-      micStream = new MediaStream();
-    }
+  const startRecording = async (stream: MediaStream) => {
+    // Check if this is a video recording
+    isVideoRecordingRef.current = stream.getVideoTracks().length > 0;
+    
+    const options = {
+      mimeType: isVideoRecordingRef.current ? "video/webm" : "audio/webm"
+    };
 
-    // Create an AudioContext to merge the streams.
-    const audioContext = new AudioContext();
-    const destination = audioContext.createMediaStreamDestination();
-
-    // Connect the remote audio stream.
     try {
-      const remoteSource = audioContext.createMediaStreamSource(remoteStream);
-      remoteSource.connect(destination);
-    } catch (err) {
-      console.error("Error connecting remote stream to the audio context:", err);
-    }
-
-    // Connect the microphone audio stream.
-    try {
-      const micSource = audioContext.createMediaStreamSource(micStream);
-      micSource.connect(destination);
-    } catch (err) {
-      console.error("Error connecting microphone stream to the audio context:", err);
-    }
-
-    const options = { mimeType: "audio/webm" };
-    try {
-      const mediaRecorder = new MediaRecorder(destination.stream, options);
+      const mediaRecorder = new MediaRecorder(stream, options);
       mediaRecorder.ondataavailable = (event: BlobEvent) => {
         if (event.data && event.data.size > 0) {
           recordedChunksRef.current.push(event.data);
@@ -54,7 +33,7 @@ function useAudioDownload() {
       mediaRecorder.start();
       mediaRecorderRef.current = mediaRecorder;
     } catch (err) {
-      console.error("Error starting MediaRecorder with combined stream:", err);
+      console.error("Error starting MediaRecorder:", err);
     }
   };
 
@@ -71,8 +50,9 @@ function useAudioDownload() {
   };
 
   /**
-   * Initiates download of the recording after converting from WebM to WAV.
-   * If the recorder is still active, we request its latest data before downloading.
+   * Initiates download of the recording.
+   * For audio, converts from WebM to WAV.
+   * For video, keeps as WebM.
    */
   const downloadRecording = async () => {
     // If recording is still active, request the latest chunk.
@@ -88,13 +68,22 @@ function useAudioDownload() {
       return;
     }
     
-    // Combine the recorded chunks into a single WebM blob.
-    const webmBlob = new Blob(recordedChunksRef.current, { type: "audio/webm" });
-
     try {
-      // Convert the WebM blob into a WAV blob.
-      const wavBlob = await convertWebMBlobToWav(webmBlob);
-      const url = URL.createObjectURL(wavBlob);
+      let finalBlob: Blob;
+      let extension: string;
+      
+      if (isVideoRecordingRef.current) {
+        // For video, keep as WebM
+        finalBlob = new Blob(recordedChunksRef.current, { type: "video/webm" });
+        extension = "webm";
+      } else {
+        // For audio, convert to WAV
+        const webmBlob = new Blob(recordedChunksRef.current, { type: "audio/webm" });
+        finalBlob = await convertWebMBlobToWav(webmBlob);
+        extension = "wav";
+      }
+
+      const url = URL.createObjectURL(finalBlob);
 
       // Generate a formatted datetime string (replace characters not allowed in filenames).
       const now = new Date().toISOString().replace(/[:.]/g, "-");
@@ -103,7 +92,7 @@ function useAudioDownload() {
       const a = document.createElement("a");
       a.style.display = "none";
       a.href = url;
-      a.download = `realtime_agents_audio_${now}.wav`;
+      a.download = `realtime_agents_recording_${now}.${extension}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -111,7 +100,7 @@ function useAudioDownload() {
       // Clean up the blob URL after a short delay.
       setTimeout(() => URL.revokeObjectURL(url), 100);
     } catch (err) {
-      console.error("Error converting recording to WAV:", err);
+      console.error("Error processing recording:", err);
     }
   };
 

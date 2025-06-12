@@ -1,22 +1,24 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { useTranscript } from '@/app/contexts/TranscriptContext';
+import React, { useState, useRef, useEffect } from "react";
+import { useTranscript } from "@/app/contexts/TranscriptContext";
+import { uploadRecordingToDropbox } from "@/app/lib/dropboxUtils";
 
 interface StudentRecordingProps {
   studentName: string;
   onRecordingComplete: (metadata: {
     filePath: string;
     studentName: string;
-    recordingType: 'audio' | 'video';
+    recordingType: "audio" | "video";
     purpose: string;
     description: string;
     date: string;
     duration: number;
     tags: string[];
+    dropboxPath?: string;
   }) => void;
   autoDownload?: boolean;
   autoStart?: boolean;
   autoStop?: boolean;
-  initialRecordingType?: 'audio' | 'video';
+  initialRecordingType?: "audio" | "video";
   initialPurpose?: string;
   initialDescription?: string;
 }
@@ -27,18 +29,21 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
   autoDownload = true,
   autoStart = false,
   autoStop = false,
-  initialRecordingType = 'audio',
-  initialPurpose = 'Daily Reflection',
-  initialDescription = 'Student feedback recording',
+  initialRecordingType = "audio",
+  initialPurpose = "Daily Reflection",
+  initialDescription = "Student feedback recording",
 }) => {
   const [isRecording, setIsRecording] = useState(false);
-  const [recordingType, setRecordingType] = useState<'audio' | 'video'>(initialRecordingType);
+  const [recordingType, setRecordingType] = useState<"audio" | "video">(
+    initialRecordingType
+  );
   const [purpose, setPurpose] = useState(initialPurpose);
   const [description, setDescription] = useState(initialDescription);
   const [duration, setDuration] = useState(0);
   const [tags, setTags] = useState<string[]>([]);
-  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
-  
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -48,97 +53,146 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
   const { addTranscriptBreadcrumb } = useTranscript();
 
   const feedbackPurposes = [
-    'Daily Reflection',
-    'Learning Experience',
-    'Challenge & Solution',
-    'Achievement',
-    'Improvement Suggestion'
+    "Daily Reflection",
+    "Learning Experience",
+    "Challenge & Solution",
+    "Achievement",
+    "Improvement Suggestion",
   ];
 
   const startRecording = async () => {
     try {
       const constraints = {
         audio: true,
-        video: recordingType === 'video',
+        video: recordingType === "video",
       };
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
 
-      const mediaRecorder = new MediaRecorder(stream);
+      // Set up MediaRecorder with proper MIME type
+      const mimeType = recordingType === "audio" ? "audio/webm" : "video/webm";
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = mediaRecorder;
+
+      // Clear previous chunks
       chunksRef.current = [];
 
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          chunksRef.current.push(e.data);
+      // Set up event handlers
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunksRef.current.push(event.data);
         }
       };
 
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, {
-          type: recordingType === 'audio' ? 'audio/mp3' : 'video/mp4',
-        });
-        const url = URL.createObjectURL(blob);
-        const filePath = `/recordings/${Date.now()}.${
-          recordingType === 'audio' ? 'mp3' : 'mp4'
-        }`;
-
-        // Save the recording metadata
-        onRecordingComplete({
-          filePath,
-          studentName,
-          recordingType,
-          purpose,
-          description,
-          date: new Date().toISOString(),
-          duration,
-          tags,
-        });
-
-        // Set download URL and trigger download if autoDownload is enabled
-        setDownloadUrl(url);
-        if (autoDownload) {
-          downloadRecording(url);
+      mediaRecorder.onstop = async () => {
+        if (chunksRef.current.length === 0) {
+          console.warn("No recorded chunks found");
+          return;
         }
 
-        // Log the recording event
-        addTranscriptBreadcrumb('Feedback recording saved', {
-          type: recordingType,
-          purpose,
-          duration,
-        });
+        setIsUploading(true);
+        setUploadError(null);
 
-        // Clean up
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach(track => track.stop());
+        try {
+          // Create the recording blob
+          const mimeType = recordingType === "audio" ? "audio/mp3" : "video/mp4";
+          const recordingBlob = new Blob(chunksRef.current, { type: mimeType });
+
+          // Create a local download URL
+          const downloadUrl = URL.createObjectURL(recordingBlob);
+
+          // Format the local filename
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+          const localFilename = `${studentName}_${purpose}_${timestamp}.${
+            recordingType === "audio" ? "mp3" : "mp4"
+          }`;
+
+          // Trigger local download
+          const a = document.createElement("a");
+          a.href = downloadUrl;
+          a.download = localFilename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(downloadUrl);
+          addTranscriptBreadcrumb("Recording downloaded locally", { filename: localFilename });
+
+          // Upload to Dropbox
+          const dropboxPath = await uploadRecordingToDropbox(
+            recordingBlob,
+            studentName,
+            recordingType,
+            purpose
+          );
+
+          // Create metadata
+          const metadata = {
+            filePath: `/recordings/${Date.now()}.${
+              recordingType === "audio" ? "mp3" : "mp4"
+            }`,
+            studentName,
+            recordingType,
+            purpose,
+            description,
+            date: new Date().toISOString(),
+            duration,
+            tags,
+            dropboxPath,
+          };
+
+          // Notify parent component
+          onRecordingComplete(metadata);
+          addTranscriptBreadcrumb("Recording saved to Dropbox", {
+            path: dropboxPath,
+          });
+
+          // Clean up
+          chunksRef.current = [];
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach((track) => track.stop());
+            streamRef.current = null;
+          }
+        } catch (error) {
+          console.error("Error handling recording:", error);
+          setUploadError("Failed to save recording. Please try again.");
+          addTranscriptBreadcrumb("Failed to save recording", { error });
+        } finally {
+          setIsUploading(false);
         }
       };
 
-      mediaRecorder.start();
+      // Start recording with timeslice to get data periodically
+      mediaRecorder.start(1000); // Get data every second
       setIsRecording(true);
       startTimeRef.current = Date.now();
-      
+
       // Start duration timer
       timerRef.current = setInterval(() => {
         setDuration(Math.floor((Date.now() - startTimeRef.current) / 1000));
       }, 1000);
 
-      addTranscriptBreadcrumb('Feedback recording started', {
+      addTranscriptBreadcrumb("Recording started", {
         type: recordingType,
         purpose,
       });
     } catch (error) {
-      console.error('Error starting recording:', error);
-      addTranscriptBreadcrumb('Recording error', { error });
+      console.error("Error starting recording:", error);
+      addTranscriptBreadcrumb("Recording error", { error });
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state === "recording"
+    ) {
+      // Request any final data
+      mediaRecorderRef.current.requestData();
+      // Stop the recording
       mediaRecorderRef.current.stop();
       setIsRecording(false);
-      
+
       // Stop duration timer
       if (timerRef.current) {
         clearInterval(timerRef.current);
@@ -148,50 +202,36 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
 
   const downloadRecording = (url: string) => {
     try {
-      const a = document.createElement('a');
+      const a = document.createElement("a");
       a.href = url;
       a.download = `${studentName}_${purpose}_${new Date().toISOString()}.${
-        recordingType === 'audio' ? 'mp3' : 'mp4'
+        recordingType === "audio" ? "mp3" : "mp4"
       }`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      addTranscriptBreadcrumb('Recording downloaded successfully');
+      addTranscriptBreadcrumb("Recording downloaded successfully");
     } catch (error) {
-      console.error('Error downloading recording:', error);
-      addTranscriptBreadcrumb('Failed to download recording', { error });
+      console.error("Error downloading recording:", error);
+      addTranscriptBreadcrumb("Failed to download recording", { error });
     }
   };
 
   const handleTagChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const tagInput = e.target.value;
-    if (tagInput.includes(',')) {
+    if (tagInput.includes(",")) {
       const newTags = tagInput
-        .split(',')
-        .map(tag => tag.trim())
-        .filter(tag => tag && !tags.includes(tag));
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter((tag) => tag && !tags.includes(tag));
       setTags([...tags, ...newTags]);
-      e.target.value = '';
+      e.target.value = "";
     }
   };
 
   const removeTag = (tagToRemove: string) => {
-    setTags(tags.filter(tag => tag !== tagToRemove));
+    setTags(tags.filter((tag) => tag !== tagToRemove));
   };
-
-  useEffect(() => {
-    return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-      }
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
-      if (downloadUrl) {
-        URL.revokeObjectURL(downloadUrl);
-      }
-    };
-  }, [downloadUrl]);
 
   useEffect(() => {
     if (autoStart && !isRecording) {
@@ -201,15 +241,47 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
 
   useEffect(() => {
     if (autoStop && isRecording) {
+      console.log("Auto-stopping recording...");
       stopRecording();
     }
   }, [autoStop]);
 
+  // Add a new effect to handle recording state changes
   useEffect(() => {
-    if (downloadUrl && autoDownload && !isRecording) {
-      downloadRecording(downloadUrl);
+    if (!isRecording) {
+      // Clean up the media stream when recording stops
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
     }
-  }, [downloadUrl, autoDownload, isRecording]);
+  }, [isRecording]);
+
+  // Add cleanup effect
+  useEffect(() => {
+    return () => {
+      // Clean up on unmount
+      if (
+        mediaRecorderRef.current &&
+        mediaRecorderRef.current.state === "recording"
+      ) {
+        mediaRecorderRef.current.stop();
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+      if (uploadError) {
+        console.error("Upload error:", uploadError);
+      }
+    };
+  }, [uploadError]);
 
   return (
     <div className="p-4 bg-white rounded-lg shadow">
@@ -220,7 +292,9 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
           </label>
           <select
             value={recordingType}
-            onChange={(e) => setRecordingType(e.target.value as 'audio' | 'video')}
+            onChange={(e) =>
+              setRecordingType(e.target.value as "audio" | "video")
+            }
             className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
             disabled={isRecording}
           >
@@ -297,11 +371,24 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
           </div>
         )}
 
-        <div className="flex justify-center space-x-4">
+        {isUploading && (
+          <div className="text-center text-lg font-medium text-blue-600">
+            <div className="animate-spin inline-block mr-2">⟳</div>
+            Uploading to Dropbox...
+          </div>
+        )}
+
+        {uploadError && (
+          <div className="text-center text-lg font-medium text-red-600">
+            {uploadError}
+          </div>
+        )}
+
+        <div className="flex justify-center">
           {!isRecording ? (
             <button
               onClick={startRecording}
-              disabled={!purpose || !description}
+              disabled={!purpose || !description || isUploading}
               className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:bg-gray-400"
             >
               Start Recording
@@ -309,26 +396,16 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
           ) : (
             <button
               onClick={stopRecording}
+              disabled={isUploading}
               className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
             >
               Stop Recording
             </button>
           )}
         </div>
-
-        {downloadUrl && !isRecording && !autoDownload && (
-          <div className="mt-4 flex justify-center">
-            <button
-              onClick={() => downloadRecording(downloadUrl)}
-              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
-            >
-              Download Recording
-            </button>
-          </div>
-        )}
       </div>
     </div>
   );
 };
 
-export default StudentRecording; 
+export default StudentRecording;

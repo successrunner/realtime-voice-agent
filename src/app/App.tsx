@@ -4,11 +4,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { v4 as uuidv4 } from "uuid";
 
-import Image from "next/image";
-
 // UI components
 import Transcript from "./components/Transcript";
-import Events from "./components/Events";
 import BottomToolbar from "./components/BottomToolbar";
 import StudentRecording from "./components/StudentRecording";
 
@@ -25,20 +22,12 @@ import { RealtimeClient } from "@/app/agentConfigs/realtimeClient";
 
 // Agent configs
 import { allAgentSets, defaultAgentSetKey } from "@/app/agentConfigs";
-// New SDK scenarios
-import { simpleHandoffScenario } from "@/app/agentConfigs/simpleHandoff";
-import { customerServiceRetailScenario } from "@/app/agentConfigs/customerServiceRetail";
-import { chatSupervisorScenario } from "@/app/agentConfigs/chatSupervisor";
+
+import { studyCoachScenario } from "./agentConfigs/studyCoach";
 
 const sdkScenarioMap: Record<string, RealtimeAgent[]> = {
-  simpleHandoff: simpleHandoffScenario,
-  customerServiceRetail: customerServiceRetailScenario,
-  chatSupervisor: chatSupervisorScenario,
   studyCoach: studyCoachScenario,
 };
-
-import useAudioDownload from "./hooks/useAudioDownload";
-import { studyCoachScenario } from "./agentConfigs/studyCoach";
 
 export default function App() {
   const searchParams = useSearchParams()!;
@@ -103,10 +92,6 @@ export default function App() {
       return stored ? stored === "true" : true;
     }
   );
-
-  // Initialize the recording hook.
-  const { startRecording, stopRecording, downloadRecording } =
-    useAudioDownload();
 
   const [showRecordingPanel, setShowRecordingPanel] = useState(false);
   const [currentStudentName, setCurrentStudentName] = useState("");
@@ -715,24 +700,6 @@ export default function App() {
     }
   };
 
-  const handleAgentChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newAgentConfig = e.target.value;
-    const url = new URL(window.location.toString());
-    url.searchParams.set("agentConfig", newAgentConfig);
-    window.location.replace(url.toString());
-  };
-
-  const handleSelectedAgentChange = (
-    e: React.ChangeEvent<HTMLSelectElement>
-  ) => {
-    const newAgentName = e.target.value;
-    // Reconnect session with the newly selected agent as root so that tool
-    // execution works correctly.
-    disconnectFromRealtime();
-    setSelectedAgentName(newAgentName);
-    // connectToRealtime will be triggered by effect watching selectedAgentName
-  };
-
   // Instead of using setCodec, we update the URL and refresh the page when codec changes
   const handleCodecChange = (newCodec: string) => {
     const url = new URL(window.location.toString());
@@ -809,15 +776,6 @@ export default function App() {
     }
   }, [sessionStatus, isAudioPlaybackEnabled]);
 
-  useEffect(() => {
-    // Clean up on unmount or when sessionStatus is updated.
-    return () => {
-      stopRecording();
-    };
-  }, [sessionStatus]);
-
-  const agentSetKey = searchParams.get("agentConfig") || "default";
-
   const handleRecordingComplete = async (metadata: any) => {
     // Save the recording metadata
     addTranscriptBreadcrumb("Recording metadata saved", metadata);
@@ -831,7 +789,6 @@ export default function App() {
 
     // Automatically download the recording
     try {
-      await downloadRecording();
       addTranscriptBreadcrumb("Recording downloaded automatically", metadata);
     } catch (error) {
       console.error("Failed to download recording:", error);
@@ -839,33 +796,41 @@ export default function App() {
     }
   };
 
-  // Update the tool call handler
+  // Handle tool calls
   const handleToolCall = async (item: any) => {
     if (item.type === "function_call") {
       const toolName = (item as any).name;
-      const args = (item as any).arguments;
-      
+      console.log("Tool call received:", item);
+
+      let args;
+      try {
+        // Parse the arguments string into an object
+        args =
+          typeof item.arguments === "string"
+            ? JSON.parse(item.arguments)
+            : item.arguments;
+        console.log("Parsed arguments:", args);
+      } catch (err) {
+        console.error("Failed to parse tool arguments:", err);
+        console.log("Raw arguments:", item.arguments);
+        args = {};
+      }
+
       // Handle recording-related tool calls
       if (toolName === "startRecording") {
-        const recordingType = args?.recordingType || "audio";
-        const purpose = args?.purpose || "Daily Reflection";
-        const description = args?.description || "Student feedback recording";
+        const recordingType = args.recordingType || "audio";
+        const purpose = args.purpose || "Daily Reflection";
+        const description = args.description || "Student feedback recording";
 
         // First, interrupt any ongoing speech
         await cancelAssistantSpeech();
 
-        // Wait a short moment for the speech to fully stop
-        await new Promise(resolve => setTimeout(resolve, 500));
-
-        // Now start the recording
-        if (audioElementRef.current?.srcObject) {
-          const remoteStream = audioElementRef.current.srcObject as MediaStream;
-          await startRecording(remoteStream);
-        }
+        // Wait a longer moment for the speech to fully stop
+        await new Promise((resolve) => setTimeout(resolve, 3000));
 
         // Show the recording panel and update config
         setShowRecordingPanel(true);
-        setCurrentStudentName("Student");
+        setCurrentStudentName(currentStudentName || "Student");
         setRecordingConfig({
           autoStart: true,
           autoStop: false,
@@ -876,22 +841,21 @@ export default function App() {
           isProcessing: false,
         });
 
-        // Add a simple message to the transcript
-        const messageId = uuidv4();
-        addTranscriptMessage(messageId, "assistant", "The recording has started");
-
         // Mute the agent after the message to prevent further speech
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        if (sdkClientRef.current) {
-          try {
-            sdkClientRef.current.mute(true);
-          } catch (err) {
-            console.warn("Failed to mute agent", err);
-          }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      } else if (toolName === "saveStudentName") {
+        // Save the student's name when provided
+        const studentName = args.name;
+        if (studentName) {
+          setCurrentStudentName(studentName);
+          // Just log the event, don't send additional events that might interrupt the flow
+          logClientEvent({ 
+            type: "student.name.saved", 
+            studentName 
+          });
         }
-
       } else if (toolName === "stopRecording") {
-        stopRecording();
+        // Stop the recording
         setShowRecordingPanel(false);
         setRecordingConfig((prev) => ({
           ...prev,
@@ -900,16 +864,6 @@ export default function App() {
           isRecording: false,
           isProcessing: true,
         }));
-
-        // Unmute the agent after recording stops
-        if (sdkClientRef.current) {
-          try {
-            sdkClientRef.current.mute(!isAudioPlaybackEnabled);
-          } catch (err) {
-            console.warn("Failed to restore agent mute state", err);
-          }
-        }
-
         // Log the stop event silently
         logClientEvent({ type: "recording.stopped" });
       }
@@ -960,12 +914,11 @@ export default function App() {
         </div>
       </div>
 
-      <div className="flex flex-1 gap-2 px-2 overflow-hidden relative">
+      <div className="flex flex-1 gap-2 overflow-hidden relative">
         <Transcript
           userText={userText}
           setUserText={setUserText}
           onSendMessage={handleSendTextMessage}
-          downloadRecording={downloadRecording}
           canSend={
             sessionStatus === "CONNECTED" && sdkClientRef.current != null
           }

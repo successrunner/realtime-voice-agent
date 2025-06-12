@@ -14,6 +14,7 @@ interface StudentRecordingProps {
     duration: number;
     tags: string[];
     dropboxPath?: string;
+    sharedUrl?: string;
   }) => void;
   autoDownload?: boolean;
   autoStart?: boolean;
@@ -43,6 +44,7 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
   const [tags, setTags] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadSuccess, setUploadSuccess] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -93,6 +95,7 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
 
         setIsUploading(true);
         setUploadError(null);
+        setUploadSuccess(false);
 
         try {
           // Create the recording blob
@@ -108,18 +111,20 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
             recordingType === "audio" ? "mp3" : "mp4"
           }`;
 
-          // Trigger local download
-          const a = document.createElement("a");
-          a.href = downloadUrl;
-          a.download = localFilename;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(downloadUrl);
-          addTranscriptBreadcrumb("Recording downloaded locally", { filename: localFilename });
+          // Trigger local download if autoDownload is enabled
+          if (autoDownload) {
+            const a = document.createElement("a");
+            a.href = downloadUrl;
+            a.download = localFilename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(downloadUrl);
+            addTranscriptBreadcrumb("Recording downloaded locally", { filename: localFilename });
+          }
 
           // Upload to Dropbox
-          const dropboxPath = await uploadRecordingToDropbox(
+          const { path: dropboxPath, sharedUrl } = await uploadRecordingToDropbox(
             recordingBlob,
             studentName,
             recordingType,
@@ -128,9 +133,7 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
 
           // Create metadata
           const metadata = {
-            filePath: `/recordings/${Date.now()}.${
-              recordingType === "audio" ? "mp3" : "mp4"
-            }`,
+            filePath: dropboxPath,
             studentName,
             recordingType,
             purpose,
@@ -139,13 +142,17 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
             duration,
             tags,
             dropboxPath,
+            sharedUrl
           };
 
           // Notify parent component
           onRecordingComplete(metadata);
           addTranscriptBreadcrumb("Recording saved to Dropbox", {
             path: dropboxPath,
+            url: sharedUrl
           });
+
+          setUploadSuccess(true);
 
           // Clean up
           chunksRef.current = [];
@@ -372,15 +379,31 @@ export const StudentRecording: React.FC<StudentRecordingProps> = ({
         )}
 
         {isUploading && (
-          <div className="text-center text-lg font-medium text-blue-600">
-            <div className="animate-spin inline-block mr-2">⟳</div>
-            Uploading to Dropbox...
+          <div className="text-center p-4 bg-blue-50 rounded-lg">
+            <div className="flex items-center justify-center space-x-2">
+              <svg className="animate-spin h-5 w-5 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <span className="text-blue-700">Uploading to Dropbox...</span>
+            </div>
           </div>
         )}
 
         {uploadError && (
-          <div className="text-center text-lg font-medium text-red-600">
-            {uploadError}
+          <div className="text-center p-4 bg-red-50 rounded-lg">
+            <span className="text-red-700">{uploadError}</span>
+          </div>
+        )}
+
+        {uploadSuccess && (
+          <div className="text-center p-4 bg-green-50 rounded-lg">
+            <div className="flex items-center justify-center space-x-2">
+              <svg className="h-5 w-5 text-green-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+              </svg>
+              <span className="text-green-700">Successfully uploaded to Dropbox!</span>
+            </div>
           </div>
         )}
 

@@ -38,21 +38,21 @@ export const formatRecordingFilename = (
  * @param studentName - The name of the student
  * @param recordingType - The type of recording (audio/video)
  * @param purpose - The purpose of the recording
- * @returns The Dropbox file path
+ * @returns The Dropbox file path and shared URL
  */
 export const uploadRecordingToDropbox = async (
   file: Blob,
   studentName: string,
   recordingType: "audio" | "video",
   purpose: string
-): Promise<string> => {
+): Promise<{ path: string; sharedUrl: string }> => {
   try {
     const filename = formatRecordingFilename(
       studentName,
       recordingType,
       purpose
     );
-    const path = `/recordings/${filename}`;
+    const path = `/students-recordings/${filename}`;
 
     // Upload the file
     const response = await dropbox.filesUpload({
@@ -62,12 +62,17 @@ export const uploadRecordingToDropbox = async (
     });
 
     // Create a shared link
-    const shareResponse = await dropbox.sharingCreateSharedLink({
+    const shareResponse = await dropbox.sharingCreateSharedLinkWithSettings({
       path: response.result.path_display || "",
+      settings: {
+        requested_visibility: { ".tag": "public" },
+      },
     });
 
-    console.log("File uploaded successfully:", shareResponse.result.url);
-    return response.result.path_display || "";
+    return {
+      path: response.result.path_display || "",
+      sharedUrl: shareResponse.result.url
+    };
   } catch (error) {
     console.error("Error uploading to Dropbox:", error);
     throw error;

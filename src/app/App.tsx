@@ -842,7 +842,7 @@ export default function App() {
         });
 
         // Mute the agent after the message to prevent further speech
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       } else if (toolName === "saveStudentName") {
         // Save the student's name when provided
         const studentName = args.name;
